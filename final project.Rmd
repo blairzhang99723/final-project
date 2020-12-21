@@ -1,0 +1,304 @@
+---
+title: "Relation between GDP and S&P/TSX index"
+author: "Chuyi Zhang"
+date: "December 21st, 2020"
+categories: ["R"]
+tags:["R Markdown"]
+output:
+  html_document
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+library(knitr)
+library(readxl)
+library(MASS)
+library(forecast)
+library(timeSeries)
+library(timeDate)
+library(sarima)
+library(ggplot2)
+library(dygraphs)
+library(ggfortify)
+library(fpp2)
+library(tidyverse)
+library(lmtest)
+library(MTS)
+library(vars)
+library(urca)
+library(lmtest)
+library(tidyverse)
+
+# load train data, train label; test data, test label
+tsx.dat <- read.csv('/Users/blair/Documents/STA304/data final/^GSPTSE.csv')
+gdp.dat <- read.csv('/Users/blair/Documents/STA304/data final/36100104.csv')
+gdp.dat <- gdp.dat[which(gdp.dat$REF_DATE == "Oct-79")[1]:nrow(gdp.dat), ]
+test.base <-  tsx.dat[which(tsx.dat$Date == "2016-01-01"), "Close"]
+tsx.dat <- tsx.dat[seq(3,  which(tsx.dat$Date == "2020-04-01"), 3), "Close"]
+gdp.dat <- na.omit(gdp.dat[gdp.dat$Estimates == 
+                     "Final consumption expenditure" & 
+                     gdp.dat$Prices == "Chained (2012) dollars", c("VALUE")])
+tim <- timeSequence("from"="1980-01-01", to="2020-04-01", by="quarter")
+tsx.ts <- window(timeSeries((diff(tsx.dat)), charvec=tim, title="tsx"), 
+                 start="1980-01-01", end="2019-10-01")
+gdp.ts <- window(timeSeries(diff(gdp.dat), charvec=tim, title="gdp"), 
+                 start="1980-01-01", end="2019-10-01")
+tsx.obs <- window(tsx.ts, start="1980-10-01", end="2016-01-01")
+gdp.obs <- window(gdp.ts, start="1980-10-01", end="2016-01-01")
+tsx.test <- window(tsx.ts, start="2016-04-01", end="2019-10-01")
+gdp.test <- window(gdp.ts, start="2016-04-01", end="2019-10-01")
+
+
+```
+
+# Abstract
+This report mainly focuses on using GDP as an indicator variable to predict the stock index trend. This idea came to me recently due to the influence of Covid-19 on society. Around May, we(Canada) have reached a recession, the unemployment rate is very high, and people spend less money than before quarantine. In the meantime, the stock market was not facing an optimistic situation, either. It seems to be that both markets are in the recession and the money market seems to be affected earlier than the financial market. I will use real data set for almost 60 years to conduct the following analysis, trying to predict the causal links to make inference. 
+
+# Keywords
+GDP, S&P/TSX Composite Index, Causal Inference, Transfer noise model, VAR, Economics 
+
+# Introduction
+  Here I am interested in finding the relationship between the money market and the stock market and trying to model the relationship using statistical techniques mainly from time series analysis. I choose to analyze this problem through two indexes-GDP(Canada) and S&P/TSX, which measure the final value produced within a country and stock market return. From my perspective, the GDP trend has some positive correlation with the trend of S&P/TSX in the long-term, and no relation in a short time. 
+  The intuition is when the economy is performing well, people have more money in hand, and they tend to spend more in the stock market, leading to prosperity in the stock market at the same time. On the other hand, when the economy is in recession, people focus more on their daily spending; they do not have extras for more investment on securities, so the stock market does not perform well, the stock market index shows the change quickly. The main problem here is the time lagging between two indexes. We need to consider policy changes in real life might take some time to reflect in the stock market. Thus, having the ability to make causal inferences in the setting of distribution lag is critical to understanding how two markets are correlated. This project's main objective is to predict the future trend of the S&P/TSX index using GDP, or the opposite-stock market is a darn good forecaster of GDP growth.
+  Two real data sets will be used to investigate how a causal link could be used to make an inference from GDP data to S&P/TSX. In the Methodology section (Section 2), two subsections included-data, and model. The cleaned data for training purposes, the cleaned data for test purposes and the model used to perform the time series analysis. I describe the process of getting the final model- implement a few tests to see the relation between these two data sets for the model selection. Results of the selecting model, time series analysis are provided in the Results section (Section 3), and inferences of this data and conclusions are presented in the Conclusion section.
+
+# Methodology:
+
+## Data:
+In this report, I used real data sets to conduct the analysis. GDP data set from National Canada and S&P Composite Index from Yahoo Finance. The reason for choosing these two data is from my background knowledge of Economics, I was hoping to find something interesting.
+For GDP and S&P/TSX data, I set the data on a quarterly basis. Training data ranges from 1980.01.01 to 2016.01.01, and the test data ranges from 2016.01.01 to 2019.10.01.
+The reason for not including recent data is that the market changed significantly by the Covid-19 pandemic, and the purpose of this research is to find a general trend; such a big recession not helpful in this process; so they were removed in the cleaning data process.
+```{r, echo=FALSE}
+# plot data
+dat.plot <- cbind(tsx.ts, gdp.ts)
+colnames(dat.plot) <- c("S&P/TSX", "GDP")
+
+dygraph(dat.plot, main="Figure 2.1: time series plot")
+
+```
+
+
+## Granger causality test 
+This test is used for determining whether one time series is useful in forecasting in another time series. X is set to be granger-cause Y if using current and past observations of both X and Y is better than using only Y when we trying to forecast Y. 
+The null hypothesis is 
+
+$$H_{0}: \beta_0 =\beta_1 = \dots = \beta_p = 0$$
+For simplicity, the built-in function grangertest() will be used. The test statistic follows $F_{p, N-2p-1}$ where $N$ is the length of the dataset. If the p-value is less than the $\alpha$ then we can reject null hypotheis and conclude X granger-cause Y. Note that in order to use grangertest, the time series must be stationary, thus the built-in function stl() will be used to detrend the time series.
+Based on the output,large p-value fail to reject null hypothesis in both direction, then there is no granger-cause between two variables. But granger casuality test has limitation. In the following section more test will be done to find out whether GDP is helpful in predicting S&P/TSX Composite index.
+```{r, echo=FALSE} 
+
+# check causality. I will use Granger causality
+gdp.remainder <- stl(gdp.ts, s.window="periodic")$time.series[, "remainder"]
+tsx.remainder <- stl(tsx.ts, s.window="periodic")$time.series[, "remainder"]
+
+grangertest(gdp.remainder ~ tsx.remainder, order = 6)
+grangertest(tsx.remainder ~ gdp.remainder, order = 6)
+```
+
+## find appropriate lags to use in the transfer noise model
+In this section, I am trying to identify what lags are used for identifying the relationship between response and explanatory variable. The two variables are difference in GDP, and difference in index. First, I will conduct Prewhiten to the variables, then find the cross-correlation between GDP and stock price. The cross-correlation statistic follows a chi-square distribution, we could use ccf() function to determine the critical value for simplicity. Also, from the cross-correlation plot, it seems like GDP leads stock prices. So let GDP be the explanatory variable and stock prices be the response variable. 
+It turns out that there is no significant relation between response variable and lags of explanatory variable. That is, only $X_t$ should be used to predicting $Y_t$
+
+```{r, echo=FALSE}
+# find appropriate lags to use in the transfer noise model
+mod.arma <- auto.arima(gdp.obs, max.p=24, max.q=24, stationary = TRUE)
+summary(mod.arma)
+
+ar <- mod.arma$coef[1]
+ma <- mod.arma$coef[2]
+
+gdp.obs.temp = numeric(0)
+tsx.obs.temp = numeric(0)
+m = as(modelCoef(new("ArmaModel", ar = ar, ma = ma)), "list")
+n.temp = numeric(length(gdp.obs))
+gdp.obs.temp <- xarmaFilter(m, x = gdp.obs, eps = n.temp, whiten = TRUE)
+tsx.obs.temp <- xarmaFilter(m, x = tsx.obs, eps = n.temp, whiten = TRUE)
+gdp.obs.temp <- c(gdp.obs.temp[!is.na(gdp.obs.temp )])
+tsx.obs.temp <- c(tsx.obs.temp[!is.na(tsx.obs.temp)])
+
+par(cex = 0.75, bg="gray95")
+ccf.plot <- ccf(gdp.obs.temp, tsx.obs.temp, lwd=1, main="Figure 3.1: 
+                cross-correlation plot", ylab="CCF")
+lag = 0
+```
+
+
+## fit linear regression
+Suppose a least square linear model is adequate to describe the relationship between the response and explanatory variables, then we are going to fit a linear regression model between response and explanatory variable. Recall the assumption of linear regression: 
+$$E(e_i) = 0\\
+Var(e_i) = \sigma^2\\
+Cov(e_i,e_j)= 0 \text{ } \forall i \ne j$$
+then if the model is adequate then there should be no serial correlation between residuals $\hat{e}_i$. It turns out that there is no serial correlation between residuals, so this linear model is adequate to describe the relationship between the variables. There is no need to use the TFN model
+```{r, echo=FALSE}
+# fit lm
+mod.ols <- lm(tsx.ts ~ gdp.ts)
+ols.res <- mod.ols$residual
+summary(mod.ols)
+
+# check acf and pacf of the residual of linear model
+ggAcf(ols.res)
+ggPacf(ols.res)
+#So serial correlation between lags exists, we need to improve the model
+```
+
+```{r, echo=FALSE}
+# fit tfn model
+mod.tfn <- auto.arima(tsx.obs, xreg = gdp.obs)
+mod.tfn.res <- mod.tfn$residual
+# cross correlation is kind of ok
+```
+##  Testing and Predicting
+In this section we will predict the response varible using the linear model and arima model. We decide to use Mean Square Error(MSE) as the performance metric. We also try to ensemble the two model by finding the weight that minimize MSE. It turns out that the MSE are 649.36, 695.40 and 649.25 for linear model, arima, and ensemble model respectively. So the linear model alone is pretty good. Note that although the arima model is not very bad in terms of MSE, but it seems fail to modeling the movement of response variable, and the ensemble model only has negligible MSE improvement compare to the linear model, so the arima model is completely garbage. This observation strengthens our beliefs that the explanatory is helpful in predicting the response, because the arima model only use the response variable alone. The prediction are shown in the figure below.
+```{r, echo=FALSE}
+# tfn predict
+tfn.prediction <- forecast(mod.tfn, xreg=gdp.test)
+f.mean <- tfn.prediction$mean
+n <- length(tsx.test)
+mse <- (sum((tsx.test - f.mean)^2)/n)^(1/2)
+
+# arma predict
+
+tsx.arma <- auto.arima(tsx.obs, stationary = TRUE)
+arma.prediction <- forecast(tsx.arma, h=length(tsx.test) + 1)
+arma.mean <- arma.prediction$mean[-1]
+mse.arma <- (sum((tsx.test - arma.mean)^2)/n)^(1/2)
+
+#ensemble
+weight_helper = function(y, y1, y2, w) {
+  return(sum((y - y1 * w - y2 * (1-w))^2))
+}
+
+w <- optimize(weight_helper, y = tsx.test, y1 = f.mean, y2 = arma.mean, interval = c(-1000, 1000),
+              maximum = FALSE)[1]$minimum
+mod.ensemble <- f.mean * w + arma.mean * (1 - w)
+mse.ensemble <- ((sum((tsx.test - mod.ensemble)^2))/n)^(1/2)
+
+forecast.all <- cbind(f.mean, arma.mean, mod.ensemble,
+                      tsx.test)
+colnames(forecast.all) <- c("linear", "arma", "ensemble", "data")
+dygraph(forecast.all, main="Figure 5.1: prediction")
+```
+
+We consider an possible improvement ---- VAR, which is proposed by macroeconometrician Christopher Sims (1980) to model the joint dynamics and causal relations among a set of macroeconomic variables. VAR models are useful for forecasting macroeconomic variables(3). Recall that in the previous section, the response variable and explanatory variable are difference in stock index and difference in GDP respectively.
+Instead in this section we will first use the original dataset and then find any cointegration if exists. Recall that for a univariate time series to be an $I(1)$ process, if the time series is stationary after differencing once and cointegration is a generalization in multivariate time series. If any coinegration exists, we could further improve the VAR model into an error correction model.
+Firstly, we will use AIC to identify the appropriate lags to use the VAR model, and it turns out that lag number $P = 3$. So all of the eigenvalues of the companion matrix has length less than 1. The definition of companion matrix is given by $$\left(\begin{matrix}
+A_{1} & A_{2} & ... & A_{p} \\
+I & 0 & ... & 0 \\
+... & I & ... & 0 \\
+... & ... & ... & ... \\
+... & ... & ... & I 
+\end{matrix} \right)$$ where $A_{i}$ are coefficient matrices in the var model, in this context, we should have three coefficient matrix because the lag number $p = 3$.
+Next we will use Johnsen max eigenvalue test to find out whether any cointegration exists and it turns out this multivariate time series is not cointegrated. The prediction generated by VAR model is shown below.
+```{r, echo=FALSE}
+# VAR
+gdp.temp <-  window(ts(gdp.dat, start = c(1979,4), end=c(2020,2), frequency=4), 
+                   start=c(1979,4), end=c(2016,1))
+tsx.temp <-  window(ts(tsx.dat, start = c(1979,4), end=c(2020,2), frequency=4), 
+                    start=c(1979,4), end=c(2016,1))
+tsx.temp.test <- window(ts(tsx.dat, start = c(1979,4), end=c(2020,2), frequency=4), 
+                        start=c(2016,2), end=c(2019,4))
+data.var <- cbind(tsx.temp, gdp.temp)
+colnames(data.var) <- c("tsx", "gdp")
+
+vars::VARselect(data.var, type="both")
+mod1 <- vars::VAR(data.var, p = 3, type="both")
+phi <- rbind(mod1$varresult$tsx$coef[1:6], 
+             mod1$varresult$gdp$coef[1:6])
+
+companion_matrix <- function(phi, l){
+  dim <- ncol(phi)
+  p <- nrow(phi)
+  m <- matrix(0L, nrow = dim, ncol = dim)
+  for (i in c(1:p)){
+    for (j in c(1:dim)){
+      m[i, j] = phi[i, j]
+    }
+  }
+  for (k in (c(p + 1): dim)){
+    m[k, k - p] = 1
+  }
+  return(m)
+}
+
+m.compan <- companion_matrix(phi, 3)
+ev_m <- eigen(m.compan, only.values = TRUE)$values
+all(sqrt(Re(ev_m)^2 + Im(ev_m)^2) < 1)
+
+# jonathan test
+m.eigen <- attributes(ca.jo(data.var, ecdet="const", spec="transitory", type="eigen"))
+kable(cbind("eigen max"=m.eigen$teststat, m.eigen$cval))
+
+vars.forecast <- forecast(mod1, h = 15)
+vars.forecast.mean <- vars.forecast$forecast$tsx$mean
+mse.vars <- (sum((tsx.temp.test - vars.forecast.mean)^2)/length(tsx.temp.test))^(1/2)
+
+forecast.vars <- cbind(vars.forecast.mean, tsx.temp.test)
+colnames(forecast.vars) <- c("VARS", "data")
+dygraph(forecast.vars)
+```
+## Final ensemble:
+In this section, we will ensemble prediction generated by the linear model and the VAR model using the MSE minimization method. Recall that the two time series I used for linear model are differencing in gdp as the explanatory and differencing in index as the response, the prediction from linear model is also the differencing in index, so a transformation is needed, and this could be done in just few lines of code. It turns out that the ensembles model is the best in terms of MSE. The prediction is shown below.
+```{r, echo=FALSE}
+tfn.forecast.undiff <- c()
+tfn.test.undiff <- c()
+curr.f <- test.base
+curr.test <- test.base
+for (i in c(1:n)) {
+  curr.f <- curr.f + f.mean[i]
+  curr.test <- curr.test + tsx.test[i]
+  tfn.forecast.undiff[i] <- curr.f 
+  tfn.test.undiff[i] <- curr.test
+}
+tim.test <- timeSequence("from"="2016-04-01", to="2019-10-01", by="quarter")
+c <- cbind(timeSeries(tfn.test.undiff, charvec = tim.test), 
+           timeSeries(tfn.forecast.undiff, charvec = tim.test))
+colnames(c) <- c("data", "tfn forecast")
+#dygraph(c)
+
+w <- optimize(weight_helper, y = tfn.test.undiff, y1 = tfn.forecast.undiff, 
+              y2 = vars.forecast.mean, interval = c(-1000, 1000),
+              maximum = FALSE)[1]$minimum
+mod.ensemble.final <- tfn.forecast.undiff * w + vars.forecast.mean * (1 - w)
+mse.ensemble.final <- ((sum((tfn.test.undiff - mod.ensemble.final)^2))/n)^(1/2)
+f.final <- cbind(tfn.test.undiff, mod.ensemble.final, vars.forecast.mean, 
+                 tfn.forecast.undiff)
+colnames(f.final) <- c("data", "ensemble", "VARS", "linear")
+dygraph(f.final)
+```
+
+# Discussion
+## Summary:
+First of all, I transform variables and find leading(explanatory) variable and response variable
+then find lags. Next, train linear regression model, and see if a transfer noise model is needed
+What's more, train Arima model and ensemble linear model and Arima model by minimize MSE and train VAR model. Lastly, ensemble linear model and VAR model by minimize MSE.
+
+## Conclusion:
+By examining the graph of the prediction and the test data, I think my prediction is good, it kind of capture the movement of the index  and the overall trend. I get the conclusion that these two indexes are related, GDP leads the S&P Composite Index. As I mentioned in the following section, some possible improvements can be made in the future. Also, I found time series analysis is actually very interesting, time on its own is fascinating. Although I am just in the starting level. In this subject, I hope to learn more about it in the future.
+
+## Weaknesses
+Based on my knowledge from economics, it is naive to use only one variable-GDP(an macroeconomic factor) to predict stock index which is an microeconomic factor after all.
+The data have small sample bias since I only chose about 36 years, and excluded the recent data due to large fluctuation caused by Covid-19.
+
+## Next Steps
+I would say adding more explanatory variables would be helpful. Such as unemployment rate, firm's retention rate etc. In addition, conduct intervention analysis to deal with problems like externality, government policy and financial crisis might be helpful.
+
+
+# References
+1. https://www150.statcan.gc.ca/n1/en/type/data?text=GDP+2020
+2. Yahoo Finance-S&P/TSX
+3. https://www.encyclopedia.com/social-sciences/applied-and-social-sciences-magazines/vector-autoregression#:~:text=Vector%20autoregression%20%28VAR%29%20models%20were%20introduced%20by%20the,macroeconomic%20variables.%20VAR%20models%20are%20useful%20for%20forecasting.
+
+install.packages('tidyverse')
+install.packages('blogdown')
+library('tidyverse')
+library('blogdown')
+blogdown::new_site(dir = ".",
+                   install_hugo = TRUE,
+                   format = "toml",
+                   sample = TRUE,
+                   theme = "yihui/hugo-lithium",
+                   hostname = "github.com",
+                   theme_example = TRUE,
+                   empty_dirs = FALSE,
+                   to_yaml = TRUE,
+                   serve = interactive())
+
